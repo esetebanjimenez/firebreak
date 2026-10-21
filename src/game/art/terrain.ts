@@ -173,7 +173,7 @@ export function buildTerrain(
   const steps = 6;
   for (let i = 0; i < steps; i++) {
     const depth = (1 - i / steps) * 0.4;
-    const band = Math.ceil(((across * 0.5) / steps) * SCALE);
+    const band = Math.max(SCALE, Math.round(((across * 0.5) / steps)) * SCALE);
     ctx.fillStyle = `rgba(0,0,0,${(depth / steps).toFixed(3)})`;
     for (let s = 0; s <= i; s++) {
       if (portrait) {

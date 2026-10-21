@@ -52,6 +52,14 @@ export function Battle({ sectorIndex, onEnd }: { sectorIndex: number; onEnd: (r:
       Object.assign(sprites, loaded);
     });
     const coarse = window.matchMedia("(pointer: coarse)").matches;
+    /**
+     * The canvas backing store must be exactly the device's pixels, or the
+     * browser rescales it on the way to the screen and the art grid goes soft
+     * again — which is what a 2.5 cap did on a 3x phone: blocks snapped to
+     * whole backing pixels, then got resampled by 1.2 anyway. Capped at 3
+     * because beyond that the pixel count stops buying anything.
+     */
+    const renderDpr = () => Math.min(window.devicePixelRatio || 1, 3);
     let raf = 0;
     let last = performance.now();
     let acc = 0;
@@ -67,7 +75,7 @@ export function Battle({ sectorIndex, onEnd }: { sectorIndex: number; onEnd: (r:
       }
       const cssW = canvas.clientWidth || 320;
       const cssH = canvas.clientHeight || 320;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+      const dpr = renderDpr();
       const bw = Math.floor(cssW * dpr);
       const bh = Math.floor(cssH * dpr);
       if (canvas.width !== bw || canvas.height !== bh) {
@@ -84,7 +92,9 @@ export function Battle({ sectorIndex, onEnd }: { sectorIndex: number; onEnd: (r:
     };
     const point = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect();
-      const box = layout(rect.width, rect.height, world.w, world.h);
+      // Same dpr the draw path uses, or the snapped scale here would not match
+      // the one on screen and the aim point would drift from the cursor.
+      const box = layout(rect.width, rect.height, world.w, world.h, renderDpr());
       let x = (clientX - rect.left - box.ox) / box.scale;
       let y = (clientY - rect.top - box.oy) / box.scale;
       if (coarse) y -= 88;

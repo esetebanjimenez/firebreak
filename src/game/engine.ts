@@ -7,7 +7,7 @@ import {
   type Stats,
   bossBase,
 } from "./content";
-import { GLYPH_H, drawText } from "./art/font";
+import { drawText } from "./art/font";
 import { FIELD, terrainFor } from "./art/palette";
 import { SCALE, pixelRect, pixelRing } from "./art/pixel";
 import { buildTerrain } from "./art/terrain";
@@ -114,9 +114,35 @@ export function worldFor(cssW: number, cssH: number) {
   return portrait ? { w: 540, h: 900, portrait: true } : { w: 960, h: 540, portrait: false };
 }
 
-export function layout(cssW: number, cssH: number, worldW: number, worldH: number) {
-  const scale = Math.min(cssW / worldW, cssH / worldH);
-  return { scale, ox: (cssW - worldW * scale) / 2, oy: (cssH - worldH * scale) / 2 };
+/**
+ * Fit the world into the canvas at a scale that keeps the art grid crisp.
+ *
+ * The naive fit is `min(cssW / worldW, cssH / worldH)`, and it is what made the
+ * field look soft: at 1280x644 with a device ratio of 2 it worked out to
+ * 1.1926, so one four-unit art block landed on 9.54 device pixels and the
+ * rasteriser had to spend some blocks at 9 and some at 10. Neighbouring pixels
+ * differing in width by ten percent is exactly the shimmer that reads as "not
+ * really pixel art".
+ *
+ * So the scale is rounded down until a whole art block is a whole number of
+ * device pixels. Snapping the *block* rather than the world unit is what keeps
+ * the cost small — at that size it gives 9 device pixels per block and a field
+ * about six percent smaller, where snapping every world unit to a device pixel
+ * would have cost sixteen. The offsets are snapped the same way, so the grid's
+ * origin sits on a device pixel too.
+ *
+ * Everything drawn on top has to agree: see `snap` in the engine's draw path.
+ */
+export function layout(cssW: number, cssH: number, worldW: number, worldH: number, dpr = 1) {
+  const raw = Math.min(cssW / worldW, cssH / worldH);
+  const blockDevice = Math.max(1, Math.floor(raw * dpr * SCALE));
+  const scale = blockDevice / (dpr * SCALE);
+  const snapOffset = (space: number) => Math.round(((space - 0) / 2) * dpr) / dpr;
+  return {
+    scale,
+    ox: snapOffset(cssW - worldW * scale),
+    oy: snapOffset(cssH - worldH * scale),
+  };
 }
 
 function mulberry32(seed: number) {
@@ -785,11 +811,11 @@ export class Engine {
       // a number spawning on top of it reads as one unreadable black slab.
       this.floaters.push({
         x: u.x + (Math.random() * 10 - 5),
-        y: u.y + floaterRise(this.sprites[u.kind]?.height ?? 56, 2),
+        y: u.y + floaterRise(this.sprites[u.kind]?.height ?? 56),
         text: String(Math.max(1, Math.round(amount))),
         life: 0.55,
         color: crit ? INK.brass : INK.fg,
-        size: 2,
+        size: 4,
       });
     }
     if (u.kind === "officer") {
@@ -974,11 +1000,11 @@ export class Engine {
           if (this.floaters.length < 28) {
             this.floaters.push({
               x: e.x,
-              y: e.y + floaterRise(this.sprites[e.kind]?.height ?? 56, 3),
+              y: e.y + floaterRise(this.sprites[e.kind]?.height ?? 56),
               text: `+${e.gold}`,
               life: 0.7,
               color: FIELD.credit,
-              size: 3,
+              size: 6,
             });
           }
         } else e.dying -= dt;
@@ -1016,13 +1042,21 @@ export class Engine {
   }
 
   draw(ctx: CanvasRenderingContext2D, cssW: number, cssH: number, dpr: number) {
-    const { scale, ox, oy } = layout(cssW, cssH, this.worldW, this.worldH);
+    const { scale, ox, oy } = layout(cssW, cssH, this.worldW, this.worldH, dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.imageSmoothingEnabled = false;
     ctx.fillStyle = INK.bg;
     ctx.fillRect(0, 0, cssW, cssH);
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
     ctx.imageSmoothingEnabled = false;
+    // Confine everything to the field. Scenery is rooted at its feet and runs
+    // a sprite's height upward, so a tree planted near the top edge reaches
+    // above the world and would otherwise paint into the letterbox. Clipped
+    // before the shake, so a shaking field stays inside a fixed window.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, this.worldW, this.worldH);
+    ctx.clip();
     // Camera shake is quantised to the art grid: a sub-pixel offset would
     // resample every sprite on the field and undo the hard edges.
     const shake = this.reduced ? 0 : this.shake;
@@ -1083,7 +1117,7 @@ export class Engine {
       if (!sprite) continue;
       const k = 1 - Math.max(0, Math.min(1, f.life / f.max));
       const frame = sprite.frames[Math.min(sprite.frames.length - 1, Math.floor(k * sprite.frames.length))];
-      ctx.drawImage(frame, Math.round(f.x - sprite.width / 2), Math.round(f.y - sprite.height / 2));
+      ctx.drawImage(frame, snap(f.x - sprite.width / 2), snap(f.y - sprite.height / 2));
     }
 
     for (const s of this.sparks) {
@@ -1094,9 +1128,10 @@ export class Engine {
 
     this.drawReticle(ctx);
 
+    const devicePerWorld = scale * dpr;
     for (const f of this.floaters) {
       ctx.globalAlpha = Math.max(0, Math.min(1, f.life * 1.6));
-      drawText(ctx, f.text, f.x, f.y - (0.55 - f.life) * 22, f.size, f.color);
+      drawText(ctx, f.text, f.x, f.y - (0.55 - f.life) * 22, f.size, devicePerWorld, f.color);
       ctx.globalAlpha = 1;
     }
     ctx.globalAlpha = 1;
@@ -1107,6 +1142,7 @@ export class Engine {
       ctx.fillStyle = "rgba(209,90,66,0.2)";
       for (let y = 0; y < this.worldH; y += SCALE * 2) ctx.fillRect(0, y, this.worldW, SCALE);
     }
+    ctx.restore();
   }
 
   private drawReticle(ctx: CanvasRenderingContext2D) {
@@ -1127,8 +1163,8 @@ export class Engine {
   }
 
   private drawProp(ctx: CanvasRenderingContext2D, sprite: Sprite, t: { x: number; y: number; flip: boolean }) {
-    const x = Math.round(t.x - sprite.width / 2);
-    const y = Math.round(t.y - sprite.height);
+    const x = snap(t.x - sprite.width / 2);
+    const y = snap(t.y - sprite.height);
     // Props cast the same pixel shadow units do, which is what sits them on
     // the ground instead of floating them over it.
     pixelShadow(ctx, t.x, t.y, sprite.width * 0.17);
@@ -1167,8 +1203,8 @@ export class Engine {
       }
     }
 
-    const x = Math.round(u.x - sprite.width / 2);
-    const y = Math.round(u.y - sprite.height);
+    const x = snap(u.x - sprite.width / 2);
+    const y = snap(u.y - sprite.height);
     ctx.drawImage(frame, x, y);
 
     if (u.hitT > 0) {
@@ -1213,11 +1249,24 @@ export class Engine {
 }
 
 /**
- * Where a floating number starts, relative to a unit's feet: clear of the
- * sprite, and clear of the health bar's outline above it.
+ * Where a floating number sits, relative to a unit's feet: clear of the sprite
+ * and of the health bar's outline above it. This is the text's baseline, not
+ * its top, so it holds whatever size the glyphs come out at.
  */
-function floaterRise(spriteHeight: number, size: number): number {
-  return -spriteHeight - SCALE * 5 - GLYPH_H * size;
+function floaterRise(spriteHeight: number): number {
+  return -spriteHeight - SCALE * 4;
+}
+
+/**
+ * Round a world coordinate onto the art grid.
+ *
+ * The terrain is built block by block from the origin, so a sprite drawn at an
+ * arbitrary world coordinate has its own blocks half a block out of step with
+ * the ground under it. Rounding every sprite to the same grid is what makes the
+ * whole field one pixel grid rather than several that happen to share a size.
+ */
+function snap(v: number): number {
+  return Math.round(v / SCALE) * SCALE;
 }
 
 /** A flattened pixel disc under a figure: what puts it on the ground. */
