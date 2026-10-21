@@ -36,8 +36,12 @@ jobs:
         id: pages
         uses: actions/configure-pages@v5
         with:
-          # Turn Pages on and point it at Actions if it is not set up yet, so
-          # the first run of this workflow is all it takes.
+          # Best-effort: turns Pages on if the token is allowed to. On this
+          # repo it is not ("Resource not accessible by integration"), so
+          # Pages had to be switched on once by hand under
+          # Settings -> Pages -> Build and deployment -> Source: GitHub
+          # Actions. Left enabled because it is a no-op once Pages is on, and
+          # it saves the manual step anywhere the token does have the rights.
           enablement: true
 
       - name: Build
