@@ -18,6 +18,8 @@
     "check:auth": "node scripts/check-auth-invariant.mjs",
     "test": "node --test 'scripts/**/*.test.mjs' && node --experimental-strip-types --test src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts src/lib/auth/gate-identity.test.ts src/lib/auth/sign-in-gate.test.ts src/lib/preview-path-prefix.test.ts",
     "lint": "eslint .",
+    "art:check": "node --experimental-strip-types --import ./scripts/ts-resolve.mjs scripts/art-check.mjs",
+    "art:preview": "node --experimental-strip-types --import ./scripts/ts-resolve.mjs scripts/art-preview.mjs screenshots/art.png 6",
     "format": "prettier --write ."
   },
   "dependencies": {

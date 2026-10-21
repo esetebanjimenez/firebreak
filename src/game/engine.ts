@@ -7,7 +7,11 @@ import {
   type Stats,
   bossBase,
 } from "./content";
-import type { SpriteMap } from "./sprites";
+import { GLYPH_H, drawText } from "./art/font";
+import { FIELD, terrainFor } from "./art/palette";
+import { SCALE, pixelRect, pixelRing } from "./art/pixel";
+import { buildTerrain } from "./art/terrain";
+import { getFlashes, type FlashMap, type Sprite, type SpriteMap } from "./sprites";
 
 export type BattleInput = {
   aimX: number;
@@ -102,7 +106,7 @@ type Boom = {
 
 type Fx = { x: number; y: number; life: number; max: number; kind: string };
 type Spark = { x: number; y: number; vx: number; vy: number; life: number; color: string };
-type Floater = { x: number; y: number; text: string; life: number; color: string };
+type Floater = { x: number; y: number; text: string; life: number; color: string; size: number };
 type Tracer = { x1: number; y1: number; x2: number; y2: number; life: number; color: string };
 
 export function worldFor(cssW: number, cssH: number) {
@@ -152,7 +156,11 @@ export class Engine {
   private sparks: Spark[] = [];
   private floaters: Floater[] = [];
   private tracers: Tracer[] = [];
-  private trees: { x: number; y: number; s: number }[] = [];
+  private trees: { x: number; y: number; flip: boolean }[] = [];
+  /** The whole field, baked on the first frame and blitted after that. */
+  private terrain: HTMLCanvasElement | null = null;
+  private readonly propKind: string;
+  private readonly flashes: FlashMap = getFlashes();
   private nextId = 1;
   private spawnAcc = 0;
   private primaryCd = 0.2;
@@ -188,6 +196,7 @@ export class Engine {
     this.onGold = opts.onGold;
     this.onEnd = opts.onEnd;
     this.timeLeft = opts.sector.time;
+    this.propKind = terrainFor(opts.sectorIndex).prop;
     this.forwardX = opts.portrait ? 0 : 1;
     this.forwardY = opts.portrait ? -1 : 0;
     const ox = opts.portrait ? opts.worldW / 2 : 128;
@@ -365,7 +374,9 @@ export class Engine {
         y = edge ? 16 + rnd() * 60 : this.worldH - 16 - rnd() * 60;
         x = 40 + rnd() * (this.worldW - 80);
       }
-      this.trees.push({ x, y, s: 0.85 + rnd() * 0.35 });
+      // Variety comes from mirroring, not from scaling: a pixel sprite drawn
+      // at 0.85x has pixels of two different widths in it.
+      this.trees.push({ x, y, flip: rnd() < 0.5 });
     }
   }
 
@@ -723,7 +734,7 @@ export class Engine {
     for (const e of targets) {
       this.hurt(e, this.stats.dmg * this.stats.stormMul, false);
       e.stunT = Math.max(e.stunT, 0.7);
-      this.tracers.push({ x1: x, y1: y, x2: e.x, y2: e.y, life: 0.18, color: "#d7e4ff" });
+      this.tracers.push({ x1: x, y1: y, x2: e.x, y2: e.y, life: 0.18, color: FIELD.tracerStorm });
     }
     this.shake = Math.max(this.shake, 5);
     tone("spark");
@@ -770,12 +781,15 @@ export class Engine {
     u.hp -= amount;
     u.hitT = 0.08;
     if (this.floaters.length < 28) {
+      // Clear of the health bar, which sits three blocks above the sprite —
+      // a number spawning on top of it reads as one unreadable black slab.
       this.floaters.push({
         x: u.x + (Math.random() * 10 - 5),
-        y: u.y - 28,
+        y: u.y + floaterRise(this.sprites[u.kind]?.height ?? 56, 2),
         text: String(Math.max(1, Math.round(amount))),
         life: 0.55,
         color: crit ? INK.brass : INK.fg,
+        size: 2,
       });
     }
     if (u.kind === "officer") {
@@ -834,8 +848,14 @@ export class Engine {
         x2: target.x,
         y2: target.y - 12,
         life: 0.07,
-        color: u.kind === "marks" ? INK.fg : INK.olive,
+        color: u.kind === "marks" ? FIELD.tracerMarks : FIELD.tracerAlly,
       });
+      // A puff where a marksman's round lands. Rifles fire far too often for
+      // one each — it would be a wall of sparks — but the marksmen are rare
+      // enough that the hit reads as an event.
+      if (u.kind === "marks" && this.fx.length < 24) {
+        this.fx.push({ x: target.x, y: target.y - 12, life: 0.16, max: 0.16, kind: "fx-hit" });
+      }
     }
 
     for (const e of this.enemies) {
@@ -854,7 +874,7 @@ export class Engine {
             x2: target.x,
             y2: target.y - 10,
             life: 0.06,
-            color: INK.signal,
+            color: FIELD.tracerEnemy,
           });
         }
       } else {
@@ -952,7 +972,14 @@ export class Engine {
           this.earned += e.gold;
           this.onGold(e.gold);
           if (this.floaters.length < 28) {
-            this.floaters.push({ x: e.x, y: e.y - 36, text: `+${e.gold}`, life: 0.7, color: INK.brass });
+            this.floaters.push({
+              x: e.x,
+              y: e.y + floaterRise(this.sprites[e.kind]?.height ?? 56, 3),
+              text: `+${e.gold}`,
+              life: 0.7,
+              color: FIELD.credit,
+              size: 3,
+            });
           }
         } else e.dying -= dt;
         if (e.dying <= 0) continue;
@@ -996,164 +1023,233 @@ export class Engine {
     ctx.fillRect(0, 0, cssW, cssH);
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
     ctx.imageSmoothingEnabled = false;
+    // Camera shake is quantised to the art grid: a sub-pixel offset would
+    // resample every sprite on the field and undo the hard edges.
     const shake = this.reduced ? 0 : this.shake;
     if (shake > 0.2) {
-      ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
-    }
-    const ground = this.sprites.ground;
-    if (ground) {
-      for (let y = 0; y < this.worldH; y += ground.height) {
-        for (let x = 0; x < this.worldW; x += ground.width) ctx.drawImage(ground, x, y);
-      }
-    } else {
-      ctx.fillStyle = "#121712";
-      ctx.fillRect(0, 0, this.worldW, this.worldH);
-    }
-    ctx.fillStyle = "rgba(0,0,0,0.28)";
-    if (this.portrait) ctx.fillRect(this.worldW * 0.3, 0, this.worldW * 0.4, this.worldH);
-    else ctx.fillRect(0, this.worldH * 0.3, this.worldW, this.worldH * 0.4);
-    const tints = [
-      "rgba(70,90,40,0.12)",
-      "rgba(0,0,0,0.06)",
-      "rgba(80,40,16,0.14)",
-      "rgba(10,20,40,0.16)",
-      "rgba(120,20,16,0.14)",
-      "rgba(90,10,10,0.2)",
-    ];
-    ctx.fillStyle = tints[this.sectorIndex] ?? tints[0];
-    ctx.fillRect(0, 0, this.worldW, this.worldH);
-
-    const tree = this.sprites.tree;
-    if (tree) {
-      for (const t of this.trees) {
-        const w = tree.width * t.s;
-        const h = tree.height * t.s;
-        ctx.drawImage(tree, t.x - w / 2, t.y - h, w, h);
-      }
+      const sx = Math.round(((Math.random() - 0.5) * shake) / SCALE) * SCALE;
+      const sy = Math.round(((Math.random() - 0.5) * shake) / SCALE) * SCALE;
+      ctx.translate(sx, sy);
     }
 
+    if (!this.terrain) {
+      this.terrain = buildTerrain(this.sectorIndex, this.worldW, this.worldH, this.portrait);
+    }
+    ctx.drawImage(this.terrain, 0, 0);
+
+    // The incoming-fire telegraph: a ring that tightens on the impact point.
     for (const b of this.booms) {
       const k = 1 - b.t / b.max;
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
-      ctx.strokeStyle = b.friendly ? INK.signal : INK.brass;
-      ctx.globalAlpha = 0.35 + 0.4 * k;
-      ctx.lineWidth = 2;
-      ctx.stroke();
+      ctx.globalAlpha = 0.3 + 0.45 * k;
+      pixelRing(ctx, b.x, b.y, b.radius * (1 - 0.18 * k), b.friendly ? FIELD.emp : FIELD.fire, SCALE, 2);
       ctx.globalAlpha = 1;
     }
 
-    const drawables = this.allies
-      .filter((u) => !u.dead)
-      .concat(this.enemies)
-      .sort((a, b) => a.y - b.y);
-    for (const u of drawables) this.drawUnit(ctx, u);
-
-    for (const p of this.shots) {
-      ctx.fillStyle = p.kind === "fire" ? "#ff7a32" : p.kind === "emp" ? "#9ecbff" : p.kind === "flash" ? "#f4f0e4" : INK.brass;
-      ctx.fillRect(p.x - 2, p.y - 2, 5, 5);
+    // Props and units share one depth sort, so a soldier can stand behind a
+    // tree as well as in front of one.
+    const prop = this.sprites[this.propKind];
+    const drawables: { y: number; unit?: Unit; tree?: { x: number; y: number; flip: boolean } }[] = [];
+    for (const u of this.allies) if (!u.dead) drawables.push({ y: u.y, unit: u });
+    for (const u of this.enemies) drawables.push({ y: u.y, unit: u });
+    if (prop) for (const t of this.trees) drawables.push({ y: t.y, tree: t });
+    drawables.sort((a, b) => a.y - b.y);
+    for (const d of drawables) {
+      if (d.unit) this.drawUnit(ctx, d.unit);
+      else if (d.tree && prop) this.drawProp(ctx, prop, d.tree);
     }
+
+    // Shots: a bright head with a short tail, both on the art grid.
+    for (const p of this.shots) {
+      const color =
+        p.kind === "fire" ? FIELD.fire : p.kind === "emp" ? FIELD.emp : p.kind === "flash" ? FIELD.flash : FIELD.grenade;
+      const d = Math.hypot(p.tx - p.x, p.ty - p.y) || 1;
+      const ux = (p.tx - p.x) / d;
+      const uy = (p.ty - p.y) / d;
+      pixelRect(ctx, p.x - ux * SCALE * 2 - SCALE / 2, p.y - uy * SCALE * 2 - SCALE / 2, SCALE, SCALE, FIELD.outline);
+      pixelRect(ctx, p.x - ux * SCALE - SCALE / 2, p.y - uy * SCALE - SCALE / 2, SCALE, SCALE, color);
+      pixelRect(ctx, p.x - SCALE, p.y - SCALE, SCALE * 2, SCALE * 2, color);
+    }
+
     for (const t of this.tracers) {
       ctx.globalAlpha = Math.max(0, t.life / 0.12);
-      ctx.strokeStyle = t.color;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(t.x1, t.y1);
-      ctx.lineTo(t.x2, t.y2);
-      ctx.stroke();
+      pixelLine(ctx, t.x1, t.y1, t.x2, t.y2, t.color);
       ctx.globalAlpha = 1;
     }
+
+    // A blast picks a frame by age and draws at its own size. Scaling a pixel
+    // sprite to an arbitrary width is the one thing that would give it away.
     for (const f of this.fx) {
-      const img = this.sprites[f.kind];
-      const a = Math.max(0, f.life / f.max);
-      ctx.globalAlpha = a;
-      if (img) {
-        const s = 64 + (1 - a) * 20;
-        ctx.drawImage(img, f.x - s / 2, f.y - s / 2, s, s);
-      }
-      ctx.globalAlpha = 1;
+      const sprite = this.sprites[f.kind];
+      if (!sprite) continue;
+      const k = 1 - Math.max(0, Math.min(1, f.life / f.max));
+      const frame = sprite.frames[Math.min(sprite.frames.length - 1, Math.floor(k * sprite.frames.length))];
+      ctx.drawImage(frame, Math.round(f.x - sprite.width / 2), Math.round(f.y - sprite.height / 2));
     }
+
     for (const s of this.sparks) {
-      ctx.globalAlpha = Math.max(0, s.life * 3);
-      ctx.fillStyle = s.color;
-      ctx.fillRect(s.x, s.y, 2, 2);
+      ctx.globalAlpha = Math.max(0, Math.min(1, s.life * 3));
+      pixelRect(ctx, s.x - SCALE / 2, s.y - SCALE / 2, SCALE, SCALE, s.color);
       ctx.globalAlpha = 1;
     }
 
-    ctx.beginPath();
-    ctx.arc(this.aimX, this.aimY, this.stats.radius, 0, Math.PI * 2);
-    ctx.strokeStyle = INK.brass;
-    ctx.globalAlpha = 0.75;
-    ctx.setLineDash([5, 4]);
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.setLineDash([]);
-    if (this.stats.impact) {
-      ctx.beginPath();
-      ctx.arc(this.aimX, this.aimY, this.stats.radius * 0.4, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = INK.brass;
-    ctx.fillRect(this.aimX - 1, this.aimY - 6, 2, 12);
-    ctx.fillRect(this.aimX - 6, this.aimY - 1, 12, 2);
+    this.drawReticle(ctx);
 
-    ctx.font = "12px 'IBM Plex Sans', sans-serif";
-    ctx.textAlign = "center";
     for (const f of this.floaters) {
-      ctx.globalAlpha = Math.max(0, f.life * 1.6);
-      ctx.fillStyle = f.color;
-      ctx.fillText(f.text, f.x, f.y - (0.55 - f.life) * 18);
+      ctx.globalAlpha = Math.max(0, Math.min(1, f.life * 1.6));
+      drawText(ctx, f.text, f.x, f.y - (0.55 - f.life) * 22, f.size, f.color);
+      ctx.globalAlpha = 1;
     }
     ctx.globalAlpha = 1;
 
     if (this.officer.hp / this.officer.maxHp < 0.35) {
-      ctx.fillStyle = "rgba(209,90,66,0.16)";
-      ctx.fillRect(0, 0, this.worldW, this.worldH);
+      // Hurt: a band of scanlines rather than a flat wash, so it reads as the
+      // screen failing rather than as a translucent rectangle.
+      ctx.fillStyle = "rgba(209,90,66,0.2)";
+      for (let y = 0; y < this.worldH; y += SCALE * 2) ctx.fillRect(0, y, this.worldW, SCALE);
+    }
+  }
+
+  private drawReticle(ctx: CanvasRenderingContext2D) {
+    ctx.globalAlpha = 0.85;
+    pixelRing(ctx, this.aimX, this.aimY, this.stats.radius, FIELD.reticle, SCALE, 2);
+    if (this.stats.impact) pixelRing(ctx, this.aimX, this.aimY, this.stats.radius * 0.4, FIELD.reticle, SCALE, 1);
+    ctx.globalAlpha = 1;
+    // Corner ticks and a centre cross, all on the grid.
+    for (const [dx, dy] of [
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ]) {
+      pixelRect(ctx, this.aimX + dx * SCALE * 2 - SCALE / 2, this.aimY + dy * SCALE * 2 - SCALE / 2, SCALE, SCALE, FIELD.reticle);
+    }
+    pixelRect(ctx, this.aimX - SCALE / 2, this.aimY - SCALE / 2, SCALE, SCALE, "#fff6d0");
+  }
+
+  private drawProp(ctx: CanvasRenderingContext2D, sprite: Sprite, t: { x: number; y: number; flip: boolean }) {
+    const x = Math.round(t.x - sprite.width / 2);
+    const y = Math.round(t.y - sprite.height);
+    // Props cast the same pixel shadow units do, which is what sits them on
+    // the ground instead of floating them over it.
+    pixelShadow(ctx, t.x, t.y, sprite.width * 0.17);
+    if (t.flip) {
+      ctx.save();
+      ctx.translate(x + sprite.width, y);
+      ctx.scale(-1, 1);
+      ctx.drawImage(sprite.canvas, 0, 0);
+      ctx.restore();
+    } else {
+      ctx.drawImage(sprite.canvas, x, y);
     }
   }
 
   private drawUnit(ctx: CanvasRenderingContext2D, u: Unit) {
-    const bob = this.reduced ? 0 : Math.sin(this.time * 6 + u.id) * (u.side === "enemy" ? 1 : 0.5);
-    const img = this.sprites[u.kind];
-    ctx.globalAlpha = u.hp <= 0 ? Math.max(0, u.dying / 0.32) : 1;
-    ctx.fillStyle = "rgba(0,0,0,0.35)";
-    ctx.beginPath();
-    ctx.ellipse(u.x, u.y, u.radius, u.radius * 0.45, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = u.side === "ally" ? INK.olive : INK.signal;
-    ctx.fillRect(u.x - 6, u.y + 1, 12, 2);
-    if (img && u.kind !== "officer") {
-      ctx.drawImage(img, Math.round(u.x - img.width / 2), Math.round(u.y - img.height + bob));
-    } else if (img && u.kind === "officer") {
-      ctx.drawImage(img, Math.round(u.x - img.width / 2), Math.round(u.y - img.height + bob));
-    } else {
-      ctx.fillStyle = u.side === "ally" ? INK.olive : INK.signal;
-      ctx.fillRect(u.x - 8, u.y - 22, 16, 22);
+    const sprite = this.sprites[u.kind];
+    const fade = u.hp <= 0 ? Math.max(0, u.dying / 0.32) : 1;
+    ctx.globalAlpha = fade;
+
+    pixelShadow(ctx, u.x, u.y, u.radius);
+
+    if (!sprite) {
+      pixelRect(ctx, u.x - 8, u.y - 22, 16, 22, u.side === "ally" ? INK.olive : INK.signal);
+      ctx.globalAlpha = 1;
+      return;
     }
+
+    // Two-frame walk. Allies hold the line and never move, so they stay on
+    // frame 0; the enemy and the drone step.
+    let frame = sprite.frames[0];
+    if (sprite.frames.length > 1 && !this.reduced) {
+      const stepping = u.kind === "drone" || (u.side === "enemy" && u.hp > 0 && u.stunT <= 0);
+      if (stepping) {
+        const rate = u.kind === "drone" ? 18 : u.kind === "jug" || u.kind === "boss" ? 4 : 6.5;
+        frame = sprite.frames[Math.floor(this.time * rate + u.id) % sprite.frames.length];
+      }
+    }
+
+    const x = Math.round(u.x - sprite.width / 2);
+    const y = Math.round(u.y - sprite.height);
+    ctx.drawImage(frame, x, y);
+
     if (u.hitT > 0) {
-      ctx.globalAlpha = 0.35;
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(u.x - 10, u.y - 24, 20, 20);
+      const flash = this.flashes[u.kind];
+      if (flash) {
+        ctx.globalAlpha = fade * Math.min(1, u.hitT * 7);
+        ctx.drawImage(flash, x, y);
+      }
+      ctx.globalAlpha = fade;
     }
-    ctx.globalAlpha = u.hp <= 0 ? Math.max(0, u.dying / 0.32) : 1;
+
+    // A footing bar in the faction colour: the last line of friend/foe defence
+    // when a dozen figures overlap.
+    pixelRect(ctx, u.x - SCALE * 1.5, u.y - SCALE, SCALE * 3, SCALE, u.side === "ally" ? INK.olive : INK.signal);
+
     if (u.hp > 0 && u.hp < u.maxHp && u.kind !== "officer") {
-      const w = u.kind === "boss" ? 36 : 22;
-      const h = 3;
-      const x = u.x - w / 2;
-      const y = u.y - (img ? img.height : 26) - 6;
-      ctx.fillStyle = "#1a140c";
-      ctx.fillRect(x, y, w, h);
-      ctx.fillStyle = u.side === "ally" ? INK.olive : INK.signal;
-      ctx.fillRect(x, y, w * Math.max(0, u.hp / u.maxHp), h);
+      const w = (u.kind === "boss" ? 10 : 6) * SCALE;
+      const x0 = Math.round((u.x - w / 2) / SCALE) * SCALE;
+      const y0 = Math.round((u.y - sprite.height - SCALE * 2) / SCALE) * SCALE;
+      ctx.fillStyle = FIELD.outline;
+      ctx.fillRect(x0 - SCALE, y0 - SCALE, w + SCALE * 2, SCALE * 3);
+      ctx.fillStyle = FIELD.hpBack;
+      ctx.fillRect(x0, y0, w, SCALE);
+      ctx.fillStyle = u.side === "ally" ? FIELD.hpAlly : u.kind === "boss" ? FIELD.hpBoss : FIELD.hpEnemy;
+      const filled = Math.round((w * Math.max(0, u.hp / u.maxHp)) / SCALE) * SCALE;
+      if (filled > 0) ctx.fillRect(x0, y0, filled, SCALE);
     }
+
     if (u.burnT > 0 && u.hp > 0) {
-      ctx.fillStyle = "#ff7a32";
-      ctx.fillRect(u.x - 2, u.y - 8, 3, 3);
+      // A flame licking off the shoulder, flickering on the grid.
+      const flick = Math.floor(this.time * 12 + u.id) % 2;
+      pixelRect(ctx, u.x + SCALE, u.y - sprite.height * 0.55 - flick * SCALE, SCALE, SCALE * 2, FIELD.burn);
+      pixelRect(ctx, u.x + SCALE, u.y - sprite.height * 0.55 - (flick + 2) * SCALE, SCALE, SCALE, "#ffd36b");
+    }
+    if (u.stunT > 0 && u.hp > 0) {
+      const flick = Math.floor(this.time * 14 + u.id) % 2;
+      pixelRect(ctx, u.x - SCALE * (flick ? 2 : 1), u.y - sprite.height - SCALE * 4, SCALE, SCALE, FIELD.emp);
+      pixelRect(ctx, u.x + SCALE * (flick ? 1 : 2), u.y - sprite.height - SCALE * 5, SCALE, SCALE, FIELD.emp);
     }
     ctx.globalAlpha = 1;
   }
 }
+
+/**
+ * Where a floating number starts, relative to a unit's feet: clear of the
+ * sprite, and clear of the health bar's outline above it.
+ */
+function floaterRise(spriteHeight: number, size: number): number {
+  return -spriteHeight - SCALE * 5 - GLYPH_H * size;
+}
+
+/** A flattened pixel disc under a figure: what puts it on the ground. */
+function pixelShadow(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number): void {
+  ctx.fillStyle = FIELD.shadow;
+  const rx = Math.max(1, Math.round(radius / SCALE));
+  const ry = Math.max(1, Math.round((radius * 0.4) / SCALE));
+  const gx = Math.round(x / SCALE);
+  const gy = Math.round(y / SCALE);
+  for (let iy = -ry; iy <= ry; iy++) {
+    for (let ix = -rx; ix <= rx; ix++) {
+      if ((ix * ix) / (rx * rx) + (iy * iy) / (ry * ry) > 1) continue;
+      ctx.fillRect((gx + ix) * SCALE, (gy + iy) * SCALE, SCALE, SCALE);
+    }
+  }
+}
+
+/** A line walked in whole blocks, so tracers match the rest of the field. */
+function pixelLine(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, color: string): void {
+  ctx.fillStyle = color;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const steps = Math.max(1, Math.round(Math.hypot(dx, dy) / SCALE));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const gx = Math.round((x1 + dx * t) / SCALE) * SCALE;
+    const gy = Math.round((y1 + dy * t) / SCALE) * SCALE;
+    ctx.fillRect(gx, gy, SCALE, SCALE);
+  }
+}
+
+
 
 type EnemyBaseScale = {
   hp: number;
