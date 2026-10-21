@@ -35,6 +35,10 @@ jobs:
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v5
+        with:
+          # Turn Pages on and point it at Actions if it is not set up yet, so
+          # the first run of this workflow is all it takes.
+          enablement: true
 
       - name: Build
         # The site's own URL, so og:image can be absolute — a relative one is
