@@ -11,3 +11,6 @@ artifacts
 .env.*
 *.log
 .DS_Store
+
+# GitHub Pages build output
+dist-pages

@@ -1,0 +1,14 @@
+/*
+ * Stylesheet entry for the static Pages build.
+ *
+ * Tailwind v4 finds its sources automatically, but it bases that scan on the
+ * Vite root — which for this build is `pages/`, not the project root. The
+ * app's markup lives in `src/`, so without naming the sources here every
+ * utility class in the game's components is dropped and the page builds
+ * unstyled. The rest of the stylesheet is shared with the Vercel build.
+ */
+
+@import "../src/styles.css";
+
+@source "../src";
+@source "../pages";

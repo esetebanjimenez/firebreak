@@ -1,0 +1,58 @@
+name: Deploy to GitHub Pages
+
+# The Vercel deploy is unaffected by this: it builds from vite.config.ts, and
+# this builds the static SPA from vite.config.pages.ts. They share src/.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time. In-progress runs are allowed to finish rather than
+# being cancelled, so a half-uploaded artifact never becomes the live site.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Build
+        # The site's own URL, so og:image can be absolute — a relative one is
+        # no use to a crawler. See vite.config.pages.ts.
+        env:
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: npm run build:pages
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist-pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

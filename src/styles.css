@@ -96,6 +96,15 @@
 .boot-panel {
   width: min(18rem, 78vw);
 }
+/* The boot title. The router shell spells this with utilities; the static
+   Pages shell is plain HTML outside Tailwind's source scan, so it uses this. */
+.boot-title {
+  font-family: var(--font-display);
+  font-size: 3rem;
+  line-height: 1;
+  letter-spacing: 0.025em;
+  margin: 0;
+}
 .boot-track {
   margin-top: 1.25rem;
   height: 0.5rem;
