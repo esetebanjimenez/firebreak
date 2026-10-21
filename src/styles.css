@@ -1,0 +1,144 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0c100e;
+  --color-surface: #171c16;
+  --color-surface-2: #222a1e;
+  --color-fg: #e7e2d6;
+  --color-muted: #8f9888;
+  --color-brass: #e0a33a;
+  --color-brass-ink: #1a1408;
+  --color-signal: #d15a42;
+  --color-line: #2c3628;
+  --font-display: "Barlow Condensed", "Arial Narrow", Impact, sans-serif;
+  --font-sans: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --radius-md: 0.5rem;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  button:focus-visible {
+    outline: 2px solid var(--color-brass);
+    outline-offset: 2px;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+.safe-top {
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+}
+.safe-bot {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+.btn-primary {
+  min-height: 2.75rem;
+  border-radius: var(--radius-md);
+  background: var(--color-brass);
+  color: var(--color-brass-ink);
+  padding: 0.5rem 1rem;
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  letter-spacing: 0.02em;
+}
+.btn-ghost {
+  min-height: 2.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-line);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  padding: 0.5rem 1rem;
+  font-family: var(--font-display);
+  font-size: 1.125rem;
+  letter-spacing: 0.02em;
+}
+.btn-primary:disabled,
+.btn-ghost:disabled {
+  opacity: 0.4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto !important;
+  }
+  .boot-fill {
+    transition: none;
+  }
+}
+
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: var(--color-bg);
+  color: var(--color-fg);
+}
+.boot-panel {
+  width: min(18rem, 78vw);
+}
+.boot-track {
+  margin-top: 1.25rem;
+  height: 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface-2);
+}
+.boot-fill {
+  height: 100%;
+  width: 6%;
+  background: var(--color-brass);
+  animation: boot-creep 28s cubic-bezier(0.02, 0.55, 0.2, 1) forwards;
+}
+.boot-fill-run {
+  width: 30%;
+  animation: boot-run 1.1s ease-in-out infinite;
+}
+.boot-status {
+  margin-top: 0.75rem;
+  color: var(--color-muted);
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+@keyframes boot-creep {
+  0% { width: 5%; }
+  30% { width: 38%; }
+  65% { width: 70%; }
+  100% { width: 92%; }
+}
+@keyframes boot-run {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-fill {
+    animation: none;
+    width: 70%;
+  }
+  .boot-fill-run {
+    animation: none;
+    width: 70%;
+  }
+}
+
